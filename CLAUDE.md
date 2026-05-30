@@ -48,9 +48,15 @@ Global flags `working` / `resting` / `paused` plus a `seconds` countdown drive e
 
 Button mapping (`click_config_provider`): SELECT = start/pause, long SELECT = stop+reset, long UP = skip back one exercise, long DOWN = skip forward, **single UP (from the idle/armed screen) = open in-watch settings**. The long-click handlers show a hint label first, then act on release. `skip`/`skip_back`/`reset` all null out `timer` after cancelling it (avoids cancelling a freed timer later). The idle screen shows a `SEL: Start / UP: Settings` hint.
 
-### In-watch settings (Phase 1: Work / Rest / Rounds)
+### In-watch settings
 
-A separate `settings_window` (pushed onto the stack, opened only when idle) hosts a `MenuLayer` with three rows; selecting a row pushes a built-in `NumberWindow` for that parameter (ranges in the `SETTING_*` constants, mirroring the Clay sliders). Values are written **live** in the `incremented`/`decremented` callbacks straight into `default_work`/`default_rest`/`default_repeat`, so leaving via Select or Back both keep the change. On the settings window's `unload` it calls `save_config()` + `reset()` to persist and apply. The window is created lazily and reused (destroyed only in `deinit`); the menu + NumberWindows are created in `load` and freed in `unload`. Exercise names are deliberately **not** editable on-watch (no keyboard) — that stays in Clay. (Phase 2 — on-watch exercise list with skip/disable synced to Clay — is designed but not yet implemented.)
+A separate `settings_window` (pushed onto the stack, opened only when idle) hosts a `MenuLayer` with four rows — Work, Rest, Rounds, Exercises. The first three push a built-in `NumberWindow` (ranges in `SETTING_*`, mirroring the Clay sliders); values are written **live** in the `incremented`/`decremented` callbacks into `default_work`/`default_rest`/`default_repeat`, so Select or Back both keep the change. On the settings window's `unload` it calls `save_config()` + `sync_to_phone()` + `reset()`.
+
+The **Exercises** row opens `exercises_window`, a second `MenuLayer` over the stored list; Select toggles `stored_enabled[i]` (✓ "On" / "Skipped") and calls `rebuild_active()`. Exercise **names** are never editable on-watch (no keyboard) — only their enabled flag — so naming stays in Clay. Windows are created lazily and reused (destroyed in `deinit`); their menus/NumberWindows are created in `load` and freed in `unload`.
+
+### Stored vs active exercise list
+
+There are two lists. The **stored** list (`stored_name[]`, `stored_enabled[]`, `stored_count`) is the editable source of truth (settings, Clay, persistence). The **active** list (`exercise[]`, `exercises`) is what the timer cycles, rebuilt by `rebuild_active()` = the entries that are `enabled && name != ""`. So a disabled exercise behaves exactly like an unnamed one: kept in storage, filtered out of the workout. The timer code only ever touches the active list, so it stayed unchanged when skip/disable was added. `start_or_pause` guards against an empty active list ("No exercises").
 
 ### Config message protocol (Clay + named keys)
 
@@ -62,11 +68,14 @@ Config travels as one AppMessage with **named** `messageKeys`, declared as a lis
 | `REST` | rest seconds |
 | `REPEAT` | number of rounds (laps) |
 | `EXERCISE_COUNT` | number of exercises sent |
+| `EXERCISE_ENABLED` | bitmask: bit i = exercise i enabled (skip/disable state) |
 | `EXERCISES[50]` | array key: exercise i at `MESSAGE_KEY_EXERCISES + i` |
 
 `EXERCISES[50]` reserves 50 consecutive slots; C reads exercise i as `dict_find(received, MESSAGE_KEY_EXERCISES + i)`, JS writes it as `dict[keys.EXERCISES + i]` via `require('message_keys')`. **Changing the key list requires `pebble clean`** (the `MESSAGE_KEY_*` macros are generated from `package.json`).
 
-Clay has no dynamic-list component, so `config.js` renders `NUM_EXERCISE_SLOTS` (12) fixed input fields with Clay-only keys (`EX0`..) that are **not** in `package.json`. `index.js` reads them with `getSettings(response, false)`, drops blanks, and maps the survivors onto `EXERCISES[i]` + `EXERCISE_COUNT`. The watch caps the count at `MAX_EXERCISES` (50) and each name at `EXERCISE_LENGTH-1` (19) chars — the Clay input `limit` must match `EXERCISE_LENGTH-1`.
+Clay has no dynamic-list component, so `config.js` renders `NUM_EXERCISE_SLOTS` (12) fixed input fields plus an `Enabled` toggle each, with Clay-only keys (`EX0`.. / `EXEN0`..) that are **not** in `package.json`. `index.js` reads them with `getSettings(response, false)` and sends every **named** slot (enabled or not) compacted into `EXERCISES[i]` + `EXERCISE_COUNT`, with `EXERCISE_ENABLED` a bitmask whose bit = the slot's position in that compacted list. Empty slots are dropped. The watch caps the count at `MAX_EXERCISES` (50) and each name at `EXERCISE_LENGTH-1` (19) chars — the Clay input `limit` must match `EXERCISE_LENGTH-1`.
+
+**Bidirectional sync.** On settings close the watch calls `sync_to_phone()`, sending `WORK`/`REST`/`REPEAT` + the `EXERCISE_ENABLED` bitmask back via the outbox (no names — they never change on-watch). `index.js`'s `appmessage` handler maps the bitmask back onto the Clay slots (re-running the same name-order compaction read from `localStorage['clay-settings']`) and writes them with `clay.setSettings(...)`, so the config page reflects watch-side skip toggles. The enabled bitmask is capped at 32 entries (matches the int32 AppMessage value); persisted on the watch as one `persist_write_int` under `PERSIST_ENABLED_KEY`. Missing key (config from before Phase 2) ⇒ all enabled.
 
 The watch persists every received config to its own storage (`PERSIST_*` keys; `save_config`/`load_config`), so it restores settings on launch without the phone. Clay edits only push on `webviewclosed`; there is no re-send on `ready`, which is why watch-side persistence matters.
 

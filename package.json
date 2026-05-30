@@ -20,6 +20,7 @@
             "REST",
             "REPEAT",
             "EXERCISE_COUNT",
+            "EXERCISE_ENABLED",
             "EXERCISES[50]"
         ],
         "projectType": "native",

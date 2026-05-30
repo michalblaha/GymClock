@@ -20,9 +20,12 @@ var REPEAT_MIN = 1, REPEAT_MAX = 50, REPEAT_STEP = 1, REPEAT_DEFAULT = 4;
 
 var DEFAULT_EXERCISES = ["Push-ups", "Sit-ups", "Lunges", "Pull-ups"];
 
-// Clay-side identifier for exercise slot i. Kept here so index.js can rebuild it.
+// Clay-side identifiers for exercise slot i. Kept here so index.js can rebuild them.
 function exerciseSlotKey(i) {
   return "EX" + i;
+}
+function exerciseEnabledKey(i) {
+  return "EXEN" + i;
 }
 
 var items = [
@@ -94,10 +97,18 @@ for (var i = 0; i < NUM_EXERCISE_SLOTS; i++) {
       "type": "text"
     }
   });
+  // Per-exercise enable toggle. Off = skipped (kept named, but not in the workout).
+  exerciseSectionItems.push({
+    "type": "toggle",
+    "messageKey": exerciseEnabledKey(i),
+    "label": "Enabled",
+    "defaultValue": true
+  });
 }
 
 module.exports = {
   items: items,
   NUM_EXERCISE_SLOTS: NUM_EXERCISE_SLOTS,
-  exerciseSlotKey: exerciseSlotKey
+  exerciseSlotKey: exerciseSlotKey,
+  exerciseEnabledKey: exerciseEnabledKey
 };

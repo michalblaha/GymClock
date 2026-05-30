@@ -18,7 +18,7 @@
 #define VIBE_COUNTDOWN_SECONDS 5    // short pulse on each of the final seconds
 
 #define APP_MESSAGE_INBOX_SIZE 1024
-#define APP_MESSAGE_OUTBOX_SIZE 64
+#define APP_MESSAGE_OUTBOX_SIZE 128 // WORK/REST/REPEAT + enabled bitmask sent back to phone
 
 // Text buffer sizes
 #define TIME_TEXT_LEN 6
@@ -44,6 +44,7 @@
 #define PERSIST_REST_KEY 2
 #define PERSIST_REPEAT_KEY 3
 #define PERSIST_COUNT_KEY 4
+#define PERSIST_ENABLED_KEY 5       // bitmask of enabled exercises (up to 32)
 #define PERSIST_EXERCISE_BASE 100   // exercise i stored at PERSIST_EXERCISE_BASE + i
 
 // In-watch settings ranges (must mirror the Clay sliders in config.js)
@@ -56,7 +57,7 @@
 #define SETTING_REPEAT_MIN 1
 #define SETTING_REPEAT_MAX 50
 #define SETTING_REPEAT_STEP 1
-#define SETTINGS_ROW_COUNT 3
+#define SETTINGS_ROW_COUNT 4   // Work, Rest, Rounds, Exercises
 
 static Window *window;
 static TextLayer *exercise_layer;
@@ -83,16 +84,27 @@ static GColor work_text;
 static GColor rest_bg;
 static GColor rest_text;
 
+// Active list: the exercises the timer actually cycles (enabled and non-empty).
 static char exercise[MAX_EXERCISES][EXERCISE_LENGTH];
 static int exercises;
 static int current_exercise;
 static int lap;
 static const char empty[2] = "";
 
+// Stored list: the full editable set (source of truth for settings, Clay and
+// persistence). A disabled exercise keeps its name but is filtered out of the
+// active list, so "disabled" behaves exactly like "no name" for the timer.
+static char stored_name[MAX_EXERCISES][EXERCISE_LENGTH];
+static bool stored_enabled[MAX_EXERCISES];
+static int stored_count;
+
 // Forward declarations for mutually-referencing handlers.
 static void reset(void);
 static void workout_complete(void);
 static void save_config(void);
+static void rebuild_active(void);
+static void open_exercises(void);
+static void sync_to_phone(void);
 
 static void show_time(void) {
   static char time_text[TIME_TEXT_LEN];
@@ -242,6 +254,10 @@ static void start_or_pause(ClickRecognizerRef recognizer, void *context) {
   (void)recognizer;
   (void)context;
   if (paused || (seconds < 0) || ((working == 0) && (resting == 0))) {
+    if (exercises <= 0) {
+      text_layer_set_text(next_layer, "No exercises"); // all disabled or unnamed
+      return;
+    }
     if (lap == 0) {
       lap = 1;
       update_lap_text();
@@ -389,9 +405,10 @@ static void settings_draw_row(GContext *gctx, const Layer *cell_layer, MenuIndex
   static char value_text[12];
   const char *title = "";
   switch (cell_index->row) {
-    case 0: title = "Work";   snprintf(value_text, sizeof(value_text), "%d s", default_work);   break;
-    case 1: title = "Rest";   snprintf(value_text, sizeof(value_text), "%d s", default_rest);   break;
-    case 2: title = "Rounds"; snprintf(value_text, sizeof(value_text), "%d", default_repeat);   break;
+    case 0: title = "Work";      snprintf(value_text, sizeof(value_text), "%d s", default_work);          break;
+    case 1: title = "Rest";      snprintf(value_text, sizeof(value_text), "%d s", default_rest);          break;
+    case 2: title = "Rounds";    snprintf(value_text, sizeof(value_text), "%d", default_repeat);          break;
+    case 3: title = "Exercises"; snprintf(value_text, sizeof(value_text), "%d/%d on", exercises, stored_count); break;
   }
   menu_cell_basic_draw(gctx, cell_layer, title, value_text, NULL);
 }
@@ -403,6 +420,7 @@ static void settings_select(MenuLayer *ml, MenuIndex *cell_index, void *context)
     case 0: number_window_set_value(nw_work, default_work);     window_stack_push(number_window_get_window(nw_work), true);   break;
     case 1: number_window_set_value(nw_rest, default_rest);     window_stack_push(number_window_get_window(nw_rest), true);   break;
     case 2: number_window_set_value(nw_repeat, default_repeat); window_stack_push(number_window_get_window(nw_repeat), true); break;
+    case 3: open_exercises(); break;
   }
 }
 
@@ -432,8 +450,9 @@ static void settings_load(Window *window) {
 
 static void settings_unload(Window *window) {
   (void)window;
-  save_config(); // persist the adjusted defaults
-  reset();       // apply them to the idle timer display
+  save_config();   // persist the adjusted defaults
+  sync_to_phone(); // keep Clay in sync (timing + enabled bitmask)
+  reset();         // apply them to the idle timer display
   number_window_destroy(nw_work);
   number_window_destroy(nw_rest);
   number_window_destroy(nw_repeat);
@@ -462,6 +481,68 @@ static void open_settings_click(ClickRecognizerRef recognizer, void *context) {
   }
 }
 
+// ---- Exercises submenu: toggle skip/disable (names stay phone-only) ----
+static Window *exercises_window;
+static MenuLayer *exercises_menu;
+
+static uint16_t exercises_get_num_rows(MenuLayer *ml, uint16_t section_index, void *context) {
+  (void)ml;
+  (void)section_index;
+  (void)context;
+  return (stored_count > 0) ? stored_count : 1; // a single placeholder row when empty
+}
+
+static void exercises_draw_row(GContext *gctx, const Layer *cell_layer, MenuIndex *cell_index, void *context) {
+  (void)context;
+  if (stored_count == 0) {
+    menu_cell_basic_draw(gctx, cell_layer, "(no exercises)", "Add them in the phone app", NULL);
+    return;
+  }
+  int i = cell_index->row;
+  const char *name = (stored_name[i][0] != '\0') ? stored_name[i] : "(empty)";
+  menu_cell_basic_draw(gctx, cell_layer, name, stored_enabled[i] ? "On" : "Skipped", NULL);
+}
+
+static void exercises_select(MenuLayer *ml, MenuIndex *cell_index, void *context) {
+  (void)context;
+  if (stored_count == 0) {
+    return;
+  }
+  int i = cell_index->row;
+  stored_enabled[i] = !stored_enabled[i]; // disabled == treated like no name by the timer
+  rebuild_active();
+  menu_layer_reload_data(ml);
+}
+
+static void exercises_load(Window *win) {
+  Layer *root = window_get_root_layer(win);
+  exercises_menu = menu_layer_create(layer_get_bounds(root));
+  menu_layer_set_callbacks(exercises_menu, NULL, (MenuLayerCallbacks) {
+    .get_num_rows = exercises_get_num_rows,
+    .draw_row = exercises_draw_row,
+    .select_click = exercises_select,
+  });
+  menu_layer_set_click_config_onto_window(exercises_menu, win);
+  layer_add_child(root, menu_layer_get_layer(exercises_menu));
+}
+
+static void exercises_unload(Window *win) {
+  (void)win;
+  menu_layer_destroy(exercises_menu);
+  exercises_menu = NULL;
+}
+
+static void open_exercises(void) {
+  if (!exercises_window) {
+    exercises_window = window_create();
+    window_set_window_handlers(exercises_window, (WindowHandlers) {
+      .load = exercises_load,
+      .unload = exercises_unload,
+    });
+  }
+  window_stack_push(exercises_window, true);
+}
+
 static void click_config_provider(void *context) {
   (void)context;
   window_single_click_subscribe(BUTTON_ID_SELECT, start_or_pause);
@@ -471,28 +552,70 @@ static void click_config_provider(void *context) {
   window_long_click_subscribe(BUTTON_ID_SELECT, 0, stop_message, stop);
 }
 
+// Rebuild the active list from the stored list: keep only enabled, non-empty
+// entries. The timer code is unchanged — it always works over the active list.
+static void rebuild_active(void) {
+  exercises = 0;
+  for (int i = 0; i < stored_count && exercises < MAX_EXERCISES; i++) {
+    if (stored_enabled[i] && stored_name[i][0] != '\0') {
+      strncpy(exercise[exercises], stored_name[i], EXERCISE_LENGTH - 1);
+      exercise[exercises][EXERCISE_LENGTH - 1] = '\0';
+      exercises++;
+    }
+  }
+}
+
 static void save_config(void) {
   persist_write_int(PERSIST_WORK_KEY, default_work);
   persist_write_int(PERSIST_REST_KEY, default_rest);
   persist_write_int(PERSIST_REPEAT_KEY, default_repeat);
-  persist_write_int(PERSIST_COUNT_KEY, exercises);
-  for (int i = 0; i < exercises; i++) {
-    persist_write_string(PERSIST_EXERCISE_BASE + i, exercise[i]);
+  persist_write_int(PERSIST_COUNT_KEY, stored_count);
+  uint32_t mask = 0;
+  for (int i = 0; i < stored_count && i < 32; i++) {
+    if (stored_enabled[i]) {
+      mask |= (1u << i);
+    }
+  }
+  persist_write_int(PERSIST_ENABLED_KEY, (int32_t)mask);
+  for (int i = 0; i < stored_count; i++) {
+    persist_write_string(PERSIST_EXERCISE_BASE + i, stored_name[i]);
   }
 }
 
+// Push the watch-side timing + enabled state back to the phone so Clay stays in
+// sync. Exercise names are never edited on-watch, so only these need syncing;
+// the phone maps the bitmask back onto its (unchanged) exercise slots.
+static void sync_to_phone(void) {
+  DictionaryIterator *iter;
+  if (app_message_outbox_begin(&iter) != APP_MSG_OK) {
+    return; // phone not connected / outbox busy; watch keeps its local copy
+  }
+  int32_t w = default_work, r = default_rest, rp = default_repeat;
+  dict_write_int(iter, MESSAGE_KEY_WORK, &w, sizeof(w), true);
+  dict_write_int(iter, MESSAGE_KEY_REST, &r, sizeof(r), true);
+  dict_write_int(iter, MESSAGE_KEY_REPEAT, &rp, sizeof(rp), true);
+  int32_t mask = 0;
+  for (int i = 0; i < stored_count && i < 32; i++) {
+    if (stored_enabled[i]) {
+      mask |= (1 << i);
+    }
+  }
+  dict_write_int(iter, MESSAGE_KEY_EXERCISE_ENABLED, &mask, sizeof(mask), true);
+  app_message_outbox_send();
+}
+
 static void set_default_config(void) {
+  static const char *defaults[DEFAULT_EXERCISE_COUNT] = {"Push-ups", "Sit-ups", "Lunges", "Pull-ups"};
   default_work = DEFAULT_WORK;
   default_rest = DEFAULT_REST;
   default_repeat = DEFAULT_REPEAT;
-  exercises = DEFAULT_EXERCISE_COUNT;
-  strncpy(exercise[0], "Push-ups", EXERCISE_LENGTH - 1);
-  strncpy(exercise[1], "Sit-ups", EXERCISE_LENGTH - 1);
-  strncpy(exercise[2], "Lunges", EXERCISE_LENGTH - 1);
-  strncpy(exercise[3], "Pull-ups", EXERCISE_LENGTH - 1);
-  for (int i = 0; i < DEFAULT_EXERCISE_COUNT; i++) {
-    exercise[i][EXERCISE_LENGTH - 1] = '\0';
+  stored_count = DEFAULT_EXERCISE_COUNT;
+  for (int i = 0; i < stored_count; i++) {
+    strncpy(stored_name[i], defaults[i], EXERCISE_LENGTH - 1);
+    stored_name[i][EXERCISE_LENGTH - 1] = '\0';
+    stored_enabled[i] = true;
   }
+  rebuild_active();
 }
 
 static void load_config(void) {
@@ -504,22 +627,28 @@ static void load_config(void) {
   default_work = persist_read_int(PERSIST_WORK_KEY);
   default_rest = persist_read_int(PERSIST_REST_KEY);
   default_repeat = persist_read_int(PERSIST_REPEAT_KEY);
-  exercises = persist_read_int(PERSIST_COUNT_KEY);
-  if (exercises > MAX_EXERCISES) {
-    exercises = MAX_EXERCISES;
+  stored_count = persist_read_int(PERSIST_COUNT_KEY);
+  if (stored_count > MAX_EXERCISES) {
+    stored_count = MAX_EXERCISES;
   }
-  if (exercises < 0) {
-    exercises = 0;
+  if (stored_count < 0) {
+    stored_count = 0;
   }
-  for (int i = 0; i < exercises; i++) {
+  // Missing key (e.g. config saved before Phase 2) => treat everything as enabled.
+  uint32_t mask = persist_exists(PERSIST_ENABLED_KEY)
+                      ? (uint32_t)persist_read_int(PERSIST_ENABLED_KEY)
+                      : 0xFFFFFFFFu;
+  for (int i = 0; i < stored_count; i++) {
     if (persist_exists(PERSIST_EXERCISE_BASE + i)) {
-      persist_read_string(PERSIST_EXERCISE_BASE + i, exercise[i], EXERCISE_LENGTH);
+      persist_read_string(PERSIST_EXERCISE_BASE + i, stored_name[i], EXERCISE_LENGTH);
     } else {
-      exercise[i][0] = '\0';
+      stored_name[i][0] = '\0';
     }
+    stored_enabled[i] = (i < 32) ? (((mask >> i) & 1u) != 0) : true;
   }
-  APP_LOG(APP_LOG_LEVEL_DEBUG, "Loaded config: work %d, rest %d, repeat %d, %d exercises",
-          default_work, default_rest, default_repeat, exercises);
+  rebuild_active();
+  APP_LOG(APP_LOG_LEVEL_DEBUG, "Loaded config: work %d, rest %d, repeat %d, %d stored, %d active",
+          default_work, default_rest, default_repeat, stored_count, exercises);
 }
 
 static void in_received_handler(DictionaryIterator *received, void *context) {
@@ -540,34 +669,49 @@ static void in_received_handler(DictionaryIterator *received, void *context) {
   }
   t = dict_find(received, MESSAGE_KEY_EXERCISE_COUNT);
   if (t) {
-    exercises = t->value->int32;
-    if (exercises > MAX_EXERCISES) {
-      exercises = MAX_EXERCISES;
+    stored_count = t->value->int32;
+    if (stored_count > MAX_EXERCISES) {
+      stored_count = MAX_EXERCISES;
     }
-    if (exercises < 0) {
-      exercises = 0;
+    if (stored_count < 0) {
+      stored_count = 0;
     }
   }
 
-  for (int i = 0; i < exercises; i++) {
+  // Enabled bitmask is optional; absent => all received exercises enabled.
+  uint32_t mask = 0xFFFFFFFFu;
+  t = dict_find(received, MESSAGE_KEY_EXERCISE_ENABLED);
+  if (t) {
+    mask = (uint32_t)t->value->int32;
+  }
+
+  for (int i = 0; i < stored_count; i++) {
     Tuple *ex = dict_find(received, MESSAGE_KEY_EXERCISES + i);
     if (ex) {
-      strncpy(exercise[i], ex->value->cstring, EXERCISE_LENGTH - 1);
-      exercise[i][EXERCISE_LENGTH - 1] = '\0';
+      strncpy(stored_name[i], ex->value->cstring, EXERCISE_LENGTH - 1);
+      stored_name[i][EXERCISE_LENGTH - 1] = '\0';
     } else {
-      exercise[i][0] = '\0';
+      stored_name[i][0] = '\0';
     }
+    stored_enabled[i] = (i < 32) ? (((mask >> i) & 1u) != 0) : true;
   }
 
-  APP_LOG(APP_LOG_LEVEL_DEBUG, "Configured: work %d, rest %d, repeat %d, %d exercises",
-          default_work, default_rest, default_repeat, exercises);
   save_config();
+  rebuild_active();
+  APP_LOG(APP_LOG_LEVEL_DEBUG, "Configured: work %d, rest %d, repeat %d, %d stored, %d active",
+          default_work, default_rest, default_repeat, stored_count, exercises);
   reset();
 }
 
 static void in_dropped_handler(AppMessageResult reason, void *context) {
   (void)context;
   APP_LOG(APP_LOG_LEVEL_DEBUG, "Message from phone dropped: %d", reason);
+}
+
+static void out_failed_handler(DictionaryIterator *iter, AppMessageResult reason, void *context) {
+  (void)iter;
+  (void)context;
+  APP_LOG(APP_LOG_LEVEL_DEBUG, "Sync to phone failed: %d", reason);
 }
 
 static void window_load(Window *window) {
@@ -650,6 +794,7 @@ static void prv_on_health_data(HealthEventType type, void *context) {
 static void init(void) {
   app_message_register_inbox_received(in_received_handler);
   app_message_register_inbox_dropped(in_dropped_handler);
+  app_message_register_outbox_failed(out_failed_handler);
   app_message_open(APP_MESSAGE_INBOX_SIZE, APP_MESSAGE_OUTBOX_SIZE);
 
 #ifdef PBL_COLOR
@@ -711,6 +856,9 @@ static void deinit(void) {
 #ifndef PBL_PLATFORM_APLITE
   app_glance_reload(prv_update_app_glance, NULL);
 #endif
+  if (exercises_window) {
+    window_destroy(exercises_window);
+  }
   if (settings_window) {
     window_destroy(settings_window);
   }
