@@ -46,7 +46,11 @@ Global flags `working` / `resting` / `paused` plus a `seconds` countdown drive e
 
 **Finite rounds:** `REPEAT` is enforced. When a work interval ends, `wl_is_last(current, count, lap, repeat)` decides whether this was the last exercise of the last lap; if so, `workout_complete()` stops the timer, long-pulses, resets, and shows "Done!" / "SEL to restart". `repeat <= 0` means loop forever. (This is the one intentional behavior change from the original, which always looped.)
 
-Button mapping (`click_config_provider`): SELECT = start/pause, long SELECT = stop+reset, long UP = skip back one exercise, long DOWN = skip forward. The long-click handlers show a hint label first, then act on release. `skip`/`skip_back`/`reset` all null out `timer` after cancelling it (avoids cancelling a freed timer later).
+Button mapping (`click_config_provider`): SELECT = start/pause, long SELECT = stop+reset, long UP = skip back one exercise, long DOWN = skip forward, **single UP (from the idle/armed screen) = open in-watch settings**. The long-click handlers show a hint label first, then act on release. `skip`/`skip_back`/`reset` all null out `timer` after cancelling it (avoids cancelling a freed timer later). The idle screen shows a `SEL: Start / UP: Settings` hint.
+
+### In-watch settings (Phase 1: Work / Rest / Rounds)
+
+A separate `settings_window` (pushed onto the stack, opened only when idle) hosts a `MenuLayer` with three rows; selecting a row pushes a built-in `NumberWindow` for that parameter (ranges in the `SETTING_*` constants, mirroring the Clay sliders). Values are written **live** in the `incremented`/`decremented` callbacks straight into `default_work`/`default_rest`/`default_repeat`, so leaving via Select or Back both keep the change. On the settings window's `unload` it calls `save_config()` + `reset()` to persist and apply. The window is created lazily and reused (destroyed only in `deinit`); the menu + NumberWindows are created in `load` and freed in `unload`. Exercise names are deliberately **not** editable on-watch (no keyboard) — that stays in Clay. (Phase 2 — on-watch exercise list with skip/disable synced to Clay — is designed but not yet implemented.)
 
 ### Config message protocol (Clay + named keys)
 

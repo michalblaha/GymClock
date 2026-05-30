@@ -46,6 +46,18 @@
 #define PERSIST_COUNT_KEY 4
 #define PERSIST_EXERCISE_BASE 100   // exercise i stored at PERSIST_EXERCISE_BASE + i
 
+// In-watch settings ranges (must mirror the Clay sliders in config.js)
+#define SETTING_WORK_MIN 5
+#define SETTING_WORK_MAX 600
+#define SETTING_WORK_STEP 5
+#define SETTING_REST_MIN 0
+#define SETTING_REST_MAX 300
+#define SETTING_REST_STEP 5
+#define SETTING_REPEAT_MIN 1
+#define SETTING_REPEAT_MAX 50
+#define SETTING_REPEAT_STEP 1
+#define SETTINGS_ROW_COUNT 3
+
 static Window *window;
 static TextLayer *exercise_layer;
 static TextLayer *time_layer;
@@ -80,6 +92,7 @@ static const char empty[2] = "";
 // Forward declarations for mutually-referencing handlers.
 static void reset(void);
 static void workout_complete(void);
+static void save_config(void);
 
 static void show_time(void) {
   static char time_text[TIME_TEXT_LEN];
@@ -209,7 +222,7 @@ static void reset(void) {
   set_colors(rest);
   text_layer_set_text(exercise_layer, empty);
   show_time();
-  update_next_text(current_exercise);
+  text_layer_set_text(next_layer, "SEL: Start\nUP: Settings");
   update_lap_text();
 }
 
@@ -331,9 +344,128 @@ static void skip_message(ClickRecognizerRef recognizer, void *context) {
   text_layer_set_text(next_layer, "Skip exercise");
 }
 
+// ---------------- In-watch settings (Phase 1: Work / Rest / Rounds) ----------------
+// A MenuLayer hub with one NumberWindow per numeric parameter. Values are written
+// live as the user adjusts them (incremented/decremented), so leaving with either
+// Select or Back keeps the change. Exercise names stay phone-only (no keyboard).
+static Window *settings_window;
+static MenuLayer *settings_menu;
+static NumberWindow *nw_work;
+static NumberWindow *nw_rest;
+static NumberWindow *nw_repeat;
+
+static void num_changed(NumberWindow *nw, void *context) {
+  *((int *)context) = number_window_get_value(nw);
+}
+
+static void num_selected(NumberWindow *nw, void *context) {
+  (void)nw;
+  (void)context;
+  window_stack_pop(true); // confirm and return to the settings menu
+}
+
+static NumberWindow *make_num_window(const char *label, int min, int max, int step, int *param) {
+  NumberWindowCallbacks cb = {
+    .incremented = num_changed,
+    .decremented = num_changed,
+    .selected = num_selected,
+  };
+  NumberWindow *nw = number_window_create(label, cb, param);
+  number_window_set_min(nw, min);
+  number_window_set_max(nw, max);
+  number_window_set_step_size(nw, step);
+  return nw;
+}
+
+static uint16_t settings_get_num_rows(MenuLayer *ml, uint16_t section_index, void *context) {
+  (void)ml;
+  (void)section_index;
+  (void)context;
+  return SETTINGS_ROW_COUNT;
+}
+
+static void settings_draw_row(GContext *gctx, const Layer *cell_layer, MenuIndex *cell_index, void *context) {
+  (void)context;
+  static char value_text[12];
+  const char *title = "";
+  switch (cell_index->row) {
+    case 0: title = "Work";   snprintf(value_text, sizeof(value_text), "%d s", default_work);   break;
+    case 1: title = "Rest";   snprintf(value_text, sizeof(value_text), "%d s", default_rest);   break;
+    case 2: title = "Rounds"; snprintf(value_text, sizeof(value_text), "%d", default_repeat);   break;
+  }
+  menu_cell_basic_draw(gctx, cell_layer, title, value_text, NULL);
+}
+
+static void settings_select(MenuLayer *ml, MenuIndex *cell_index, void *context) {
+  (void)ml;
+  (void)context;
+  switch (cell_index->row) {
+    case 0: number_window_set_value(nw_work, default_work);     window_stack_push(number_window_get_window(nw_work), true);   break;
+    case 1: number_window_set_value(nw_rest, default_rest);     window_stack_push(number_window_get_window(nw_rest), true);   break;
+    case 2: number_window_set_value(nw_repeat, default_repeat); window_stack_push(number_window_get_window(nw_repeat), true); break;
+  }
+}
+
+static void settings_appear(Window *window) {
+  (void)window;
+  if (settings_menu) {
+    menu_layer_reload_data(settings_menu); // refresh values after returning from a NumberWindow
+  }
+}
+
+static void settings_load(Window *window) {
+  Layer *root = window_get_root_layer(window);
+  GRect bounds = layer_get_bounds(root);
+  settings_menu = menu_layer_create(bounds);
+  menu_layer_set_callbacks(settings_menu, NULL, (MenuLayerCallbacks) {
+    .get_num_rows = settings_get_num_rows,
+    .draw_row = settings_draw_row,
+    .select_click = settings_select,
+  });
+  menu_layer_set_click_config_onto_window(settings_menu, window);
+  layer_add_child(root, menu_layer_get_layer(settings_menu));
+
+  nw_work = make_num_window("Work (s)", SETTING_WORK_MIN, SETTING_WORK_MAX, SETTING_WORK_STEP, &default_work);
+  nw_rest = make_num_window("Rest (s)", SETTING_REST_MIN, SETTING_REST_MAX, SETTING_REST_STEP, &default_rest);
+  nw_repeat = make_num_window("Rounds", SETTING_REPEAT_MIN, SETTING_REPEAT_MAX, SETTING_REPEAT_STEP, &default_repeat);
+}
+
+static void settings_unload(Window *window) {
+  (void)window;
+  save_config(); // persist the adjusted defaults
+  reset();       // apply them to the idle timer display
+  number_window_destroy(nw_work);
+  number_window_destroy(nw_rest);
+  number_window_destroy(nw_repeat);
+  nw_work = nw_rest = nw_repeat = NULL;
+  menu_layer_destroy(settings_menu);
+  settings_menu = NULL;
+}
+
+static void open_settings(void) {
+  if (!settings_window) {
+    settings_window = window_create();
+    window_set_window_handlers(settings_window, (WindowHandlers) {
+      .load = settings_load,
+      .appear = settings_appear,
+      .unload = settings_unload,
+    });
+  }
+  window_stack_push(settings_window, true);
+}
+
+static void open_settings_click(ClickRecognizerRef recognizer, void *context) {
+  (void)recognizer;
+  (void)context;
+  if ((working == 0) && (resting == 0)) { // only from the idle / armed screen
+    open_settings();
+  }
+}
+
 static void click_config_provider(void *context) {
   (void)context;
   window_single_click_subscribe(BUTTON_ID_SELECT, start_or_pause);
+  window_single_click_subscribe(BUTTON_ID_UP, open_settings_click);
   window_long_click_subscribe(BUTTON_ID_UP, 0, skip_back_message, skip_back);
   window_long_click_subscribe(BUTTON_ID_DOWN, 0, skip_message, skip);
   window_long_click_subscribe(BUTTON_ID_SELECT, 0, stop_message, stop);
@@ -579,6 +711,9 @@ static void deinit(void) {
 #ifndef PBL_PLATFORM_APLITE
   app_glance_reload(prv_update_app_glance, NULL);
 #endif
+  if (settings_window) {
+    window_destroy(settings_window);
+  }
   window_destroy(window);
 }
 
