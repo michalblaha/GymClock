@@ -5,3 +5,7 @@ appstore-resources
 build
 
 node_modules/
+
+# Generated verification artifacts
+pebble_screenshot_*.png
+.double-cross-check-talk_*.log

@@ -1,83 +1,70 @@
-var initialized = false;
-var messageQueue = [];
-var config = {
-  "work": 90,
-  "rest": 30,
-  "repeat": 4,
-  "exercises": ["Push-ups", "Sit-ups", "Lunges", "Pull-ups"]
-};
+// Phone-side PebbleKit JS for the GymClock interval timer.
+//
+// Configuration is handled by Clay (src/pkjs/config.js). We disable Clay's
+// automatic event handling so we can map the fixed exercise input slots onto
+// the EXERCISES[] array message key manually. WORK / REST / REPEAT are declared
+// as named message keys in package.json and are addressed via require('message_keys').
+//
+// The watch persists the received configuration in its own storage, so we only
+// need to push settings when the user actually edits them (webviewclosed).
 
-Pebble.addEventListener("ready",
-  function(e) {
-    var storedConf = localStorage.getItem("config");
-    if (storedConf && (storedConf.substr(0, 1) == "{")) {
-      var sc = JSON.parse(storedConf);
-      if (sc) {
-        if (sc.work && parseInt(sc.work)) {
-          config.work = parseInt(sc.work);
-        }
-        if (sc.rest && parseInt(sc.rest)) {
-          config.rest = parseInt(sc.rest);
-        }
-        if (sc.repeat && parseInt(sc.repeat)) {
-          config.repeat = parseInt(sc.repeat);
-        }
-        if (sc.exercises && sc.exercises.length) {
-          config.exercises = sc.exercises;
-        }
-      }
+var Clay = require('@rebble/clay');
+var keys = require('message_keys');
+var config = require('./config');
+var clay = new Clay(config.items, null, { autoHandleEvents: false });
+
+Pebble.addEventListener('showConfiguration', function() {
+  Pebble.openURL(clay.generateUrl());
+});
+
+Pebble.addEventListener('webviewclosed', function(e) {
+  if (!e || !e.response) {
+    return; // configuration cancelled, nothing to send
+  }
+
+  // convert=false -> object keyed by messageKey string, each value is { value: ... }
+  var settings = clay.getSettings(e.response, false);
+
+  function num(key) {
+    var item = settings[key];
+    return item ? parseInt(item.value, 10) : NaN;
+  }
+  function str(key) {
+    var item = settings[key];
+    return (item && item.value != null) ? ('' + item.value).trim() : '';
+  }
+
+  var work = num('WORK');
+  var rest = num('REST');
+  var repeat = num('REPEAT');
+
+  // Fail loud instead of inventing values: Clay always supplies in-range
+  // defaults, so NaN here means something is genuinely wrong.
+  if (isNaN(work) || isNaN(rest) || isNaN(repeat)) {
+    console.log('Invalid timing values from Clay, not sending: ' + JSON.stringify(settings));
+    return;
+  }
+
+  var exercises = [];
+  for (var i = 0; i < config.NUM_EXERCISE_SLOTS; i++) {
+    var name = str(config.exerciseSlotKey(i));
+    if (name) {
+      exercises.push(name);
     }
-    console.log("JavaScript app ready and running!");
-    initialized = true;
-    sendConfig(config);
   }
-);
 
-Pebble.addEventListener("showConfiguration",
-  function() {
-    var uri = "https://samuelmr.github.io/pebble-workout/configure.html?conf="+
-    encodeURIComponent(JSON.stringify(config));
-    console.log("Configuration url: " + uri);
-    Pebble.openURL(uri);
+  var dict = {};
+  dict[keys.WORK] = work;
+  dict[keys.REST] = rest;
+  dict[keys.REPEAT] = repeat;
+  dict[keys.EXERCISE_COUNT] = exercises.length;
+  for (var j = 0; j < exercises.length; j++) {
+    dict[keys.EXERCISES + j] = exercises[j];
   }
-);
 
-Pebble.addEventListener("webviewclosed",
-  function(e) {
-    config = JSON.parse(decodeURIComponent(e.response));
-    console.log("Webview window returned: " + JSON.stringify(config));
-    sendConfig(config);
-    localStorage.setItem("config", JSON.stringify(config));
-  }
-);
-
-function sendConfig(config) {
-  var msg = {};
-  config.exercises = config.exercises || []; // just in case
-  msg["0"] = parseInt(config.work) || 90;
-  msg["1"] = parseInt(config.rest) || 30;
-  msg["2"] = parseInt(config.repeat) || 4;
-  msg["3"] = config.exercises.length;
-  for (var i=0; i<config.exercises.length; i++) {
-    msg[i+4] = config.exercises[i];
-  }
-  messageQueue.push(msg);
-  sendNextMessage();
-}
-
-function sendNextMessage() {
-  if (messageQueue.length > 0) {
-    Pebble.sendAppMessage(messageQueue[0], appMessageAck, appMessageNack);
-    console.log("Sent message to Pebble! " + JSON.stringify(messageQueue[0]));
-  }
-}
-
-function appMessageAck(e) {
-  console.log("Message accepted by Pebble!");
-  messageQueue.shift();
-  sendNextMessage();
-}
-
-function appMessageNack(e) {
-  console.log("Message rejected by Pebble! " + e.error);
-}
+  Pebble.sendAppMessage(dict, function() {
+    console.log('Sent workout config to Pebble: ' + JSON.stringify(dict));
+  }, function(err) {
+    console.log('Failed to send workout config: ' + JSON.stringify(err));
+  });
+});

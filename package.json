@@ -1,18 +1,27 @@
 {
-    "author": "Samuel Rinnetmaki",
-    "dependencies": {},
+    "author": "Michal Bláha",
+    "contributors": [
+        "Samuel Rinnetmäki (original work-out)"
+    ],
+    "dependencies": {
+        "@rebble/clay": "^1.0.10"
+    },
     "keywords": [],
-    "name": "work-out",
+    "name": "gymclock",
     "pebble": {
         "capabilities": [
             "configurable",
             "health"
         ],
-        "displayName": "Work Out",
+        "displayName": "GymClock",
         "enableMultiJS": true,
-        "messageKeys": {
-            "dummy": 0
-        },
+        "messageKeys": [
+            "WORK",
+            "REST",
+            "REPEAT",
+            "EXERCISE_COUNT",
+            "EXERCISES[50]"
+        ],
         "projectType": "native",
         "resources": {
             "media": [
@@ -22,6 +31,13 @@
                     "name": "ICON",
                     "targetPlatforms": null,
                     "type": "bitmap"
+                },
+                {
+                    "characterRegex": "[0-9 /Lap]",
+                    "file": "fonts/Roboto-Regular.ttf",
+                    "name": "ROBOTO_REGULAR_42",
+                    "targetPlatforms": null,
+                    "type": "font"
                 }
             ]
         },
