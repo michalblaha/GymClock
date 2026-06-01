@@ -36,7 +36,7 @@
                 {
                     "characterRegex": "[0-9 /L|]",
                     "file": "fonts/Roboto-Regular.ttf",
-                    "name": "ROBOTO_REGULAR_42",
+                    "name": "ROBOTO_REGULAR_32",
                     "targetPlatforms": null,
                     "type": "font"
                 }
@@ -52,5 +52,5 @@
             "watchface": false
         }
     },
-    "version": "2.0.1"
+    "version": "2.0.2"
 }

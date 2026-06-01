@@ -34,7 +34,7 @@
 #define LAYOUT_TOP_MARGIN 4
 #define LAYOUT_HR_HEIGHT_BIG 34
 #define LAYOUT_HR_HEIGHT_SMALL 28
-#define LAYOUT_LAP_HEIGHT_BIG 48
+#define LAYOUT_LAP_HEIGHT_BIG 38
 #define LAYOUT_LAP_HEIGHT_SMALL 30
 #define LAYOUT_TIME_HEIGHT 52
 #define LAYOUT_EXERCISE_HEIGHT 30
@@ -64,7 +64,7 @@ static TextLayer *exercise_layer;
 static TextLayer *time_layer;
 static TextLayer *lap_layer;
 static TextLayer *next_layer;
-static GFont lap_font;       // custom Roboto Regular 42 for the lap line (tall displays only)
+static GFont lap_font;       // custom Roboto Regular 32 for the lap line (tall displays only)
 static AppTimer *timer;
 #ifdef PBL_HEALTH
 static TextLayer *hr_layer;
@@ -734,7 +734,7 @@ static void window_load(Window *window) {
   int lap_h = tall ? LAYOUT_LAP_HEIGHT_BIG : LAYOUT_LAP_HEIGHT_SMALL;
   lap_layer = text_layer_create(GRect(0, y, w, lap_h));
   if (tall) {
-    lap_font = fonts_load_custom_font(resource_get_handle(RESOURCE_ID_ROBOTO_REGULAR_42));
+    lap_font = fonts_load_custom_font(resource_get_handle(RESOURCE_ID_ROBOTO_REGULAR_32));
     text_layer_set_font(lap_layer, lap_font);
   } else {
     text_layer_set_font(lap_layer, fonts_get_system_font(FONT_KEY_GOTHIC_28));
