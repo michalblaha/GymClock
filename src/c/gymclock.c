@@ -126,7 +126,7 @@ static void show_time(void) {
 static void update_lap_text(void) {
   static char lap_text[LAP_TEXT_LEN];
   if (lap) {
-    snprintf(lap_text, sizeof(lap_text), "%d/%d  Lap %d", current_exercise + 1, exercises, lap);
+    snprintf(lap_text, sizeof(lap_text), "L %d | %d/%d", lap, current_exercise + 1, exercises);
     text_layer_set_text(lap_layer, lap_text);
   }
   else {

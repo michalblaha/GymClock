@@ -34,7 +34,7 @@
                     "type": "bitmap"
                 },
                 {
-                    "characterRegex": "[0-9 /Lap]",
+                    "characterRegex": "[0-9 /L|]",
                     "file": "fonts/Roboto-Regular.ttf",
                     "name": "ROBOTO_REGULAR_42",
                     "targetPlatforms": null,
@@ -44,16 +44,13 @@
         },
         "sdkVersion": "3",
         "targetPlatforms": [
-            "aplite",
-            "basalt",
-            "chalk",
-            "diorite",
-            "emery"
+            "emery",
+            "gabbro"
         ],
         "uuid": "2bc769b9-84a5-4b10-90b3-d08a396a9372",
         "watchapp": {
             "watchface": false
         }
     },
-    "version": "1.15.0"
+    "version": "2.0.1"
 }
