@@ -3,10 +3,18 @@
 #
 # Feel free to customize this to your needs.
 #
+import json
 import os.path
 
 top = '.'
 out = 'build'
+
+
+def _app_version():
+    """Single source of truth for the version: package.json. Injected into the C
+    build as -DAPP_VERSION so the watch UI never duplicates the number."""
+    with open('package.json') as f:
+        return json.load(f)['version']
 
 
 def options(ctx):
@@ -29,9 +37,11 @@ def build(ctx):
     build_worker = os.path.exists('worker_src')
     binaries = []
 
+    app_version = _app_version()
     cached_env = ctx.env
     for platform in ctx.env.TARGET_PLATFORMS:
         ctx.env = ctx.all_envs[platform]
+        ctx.env.append_value('DEFINES', 'APP_VERSION={}'.format(app_version))
         ctx.set_group(ctx.env.PLATFORM_NAME)
         app_elf = '{}/pebble-app.elf'.format(ctx.env.BUILD_DIR)
         ctx.pbl_build(source=ctx.path.ant_glob('src/c/**/*.c'), target=app_elf, bin_type='app')
