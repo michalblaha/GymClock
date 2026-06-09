@@ -37,9 +37,9 @@
 #define HR_TEXT_LEN 12
 #define STATS_TEXT_LEN 24           // "9999 kcal  99:99" + slack
 
-// Heart-rate sampling: while a workout runs we ask the HRM for ~1 s updates so the
-// BPM reading tracks effort; period 0 (set on stop/pause/idle) restores the OS
-// default. No-op on health platforms without an HRM (basalt/chalk).
+// Heart-rate sampling: while the app is open we ask the HRM for ~1 s updates so the
+// BPM reading tracks effort even on the idle screen; period 0 (set on exit) restores
+// the OS default. No-op on health platforms without an HRM (basalt/chalk).
 #define HR_FAST_SAMPLE_PERIOD_S 1
 
 // Status line shown while paused: states it's paused and the two button actions.
@@ -250,8 +250,9 @@ static void place_next(bool idle) {
   }
 }
 
-// Request fast HRM sampling while the clock is running so the BPM tracks effort;
-// period 0 restores the OS default. Tied to the running/stopped lifecycle below.
+// Request fast HRM sampling for the whole time the app is open so the BPM tracks
+// effort even while the clock is idle; period 0 restores the OS default. Tied to
+// the app lifecycle (init -> deinit), not to the running/stopped countdown.
 static void hr_set_fast(bool fast) {
 #ifdef PBL_HEALTH
   health_service_set_heart_rate_sample_period(fast ? HR_FAST_SAMPLE_PERIOD_S : 0);
@@ -416,7 +417,6 @@ static void reset(void) {
   lap = 0;
   seconds = default_work;
   clear_session();
-  hr_set_fast(false);
   show_stats(false);
   show_idle_title();
   show_version(true);
@@ -459,7 +459,6 @@ static void start_or_pause(ClickRecognizerRef recognizer, void *context) {
     paused = 0;
     show_version(false);
     show_stats(true);
-    hr_set_fast(true);
     place_next(false);
     hide_notice();
     seconds--;
@@ -477,7 +476,6 @@ static void start_or_pause(ClickRecognizerRef recognizer, void *context) {
   else {
     APP_LOG(APP_LOG_LEVEL_DEBUG, "Pause: %02d", seconds);
     paused = 1;
-    hr_set_fast(false); // paused is not running; let the HRM idle down again
     if (timer) {
       app_timer_cancel(timer);
       timer = NULL;
@@ -519,7 +517,6 @@ static void skip_back(ClickRecognizerRef recognizer, void *context) {
   paused = 0;
   show_version(false);
   show_stats(false);
-  hr_set_fast(false); // armed (timer cancelled) => stop fast sampling
   place_next(false);
   hide_notice();
   set_colors(rest);
@@ -559,7 +556,6 @@ static void skip(ClickRecognizerRef recognizer, void *context) {
   paused = 0;
   show_version(false);
   show_stats(false);
-  hr_set_fast(false); // armed (timer cancelled) => stop fast sampling
   place_next(false);
   hide_notice();
   set_colors(rest);
@@ -1013,7 +1009,6 @@ static void restore_or_reset(void) {
     working = s_working;
     resting = s_resting;
     paused = (working || resting) ? 1 : 0; // mid-interval pause vs armed-after-skip
-    hr_set_fast(false); // frozen is not running; keep the HRM idle until resumed
     if (working) {
       set_colors(work);
       show_stats(true);
@@ -1061,7 +1056,6 @@ static void restore_or_reset(void) {
   resting = !working;
   paused = 0;
   show_stats(true);
-  hr_set_fast(true); // running again: resume fast HRM sampling
   place_next(false);
   if (working) {
     set_colors(work);
@@ -1246,6 +1240,7 @@ static void init(void) {
 
 #ifdef PBL_HEALTH
   health_service_events_subscribe(prv_on_health_data, NULL);
+  hr_set_fast(true); // measure HR for the whole session, idle screen included
 #endif
 
   working = 0;

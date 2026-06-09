@@ -4,6 +4,14 @@ Všechny podstatné změny v aplikaci GymClock. Formát vychází z
 [Keep a Changelog](https://keepachangelog.com/), verze dle
 [Semantic Versioning](https://semver.org/).
 
+## [2.1.1]
+
+### Měření tepu
+- **Tep se měří po celou dobu běhu aplikace** — rychlé vzorkování
+  senzoru (~1 s) nově běží i na klidové obrazovce, nejen během
+  odpočtu. Hodnota BPM je tak aktuální hned po spuštění aplikace.
+  Vzorkování se vrací na výchozí interval až při ukončení aplikace.
+
 ## [2.1.0]
 
 ### Měření tepu a zdravotních dat
